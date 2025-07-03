@@ -4,13 +4,31 @@
   <meta charset="UTF-8">
   <title>Сканер Монет Binance Futures</title>
   <style>
-    .long { background-color: #D4EDDA; } /* Зеленый для лонга */
-    .short { background-color: #F8D7DA; } /* Красный для шорта */
+    .long { background-color: #D4EDDA; }
+    .short { background-color: #F8D7DA; }
+    .neutral { background-color: #FFF3CD; }
+
+    th {
+      cursor: pointer;
+      user-select: none;
+    }
+
+    th.sorted-asc::after {
+      content: " ▲";
+    }
+
+    th.sorted-desc::after {
+      content: " ▼";
+    }
   </style>
 </head>
 <body>
   <h2>Отбор Монет Binance Futures (Лонг / Шорт)</h2>
   <div id="status">Загрузка...</div>
+  
+  <!-- Кнопка для обновления данных вручную -->
+  <button onclick="loadCoins()">Обновить данные</button>
+  
   <table border="1" id="coins-table">
     <thead>
       <tr>
@@ -34,18 +52,15 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Главная функция для загрузки и обработки монет
 async function loadCoins() {
   try {
     document.getElementById('status').innerText = "Загружаем базовые данные...";
 
-    // Получаем список монет и фильтруем
     const tickers = await fetch('https://fapi.binance.com/fapi/v1/ticker/24hr').then(res => res.json());
 
-    // Фильтруем по объему и изменениям
     const baseFiltered = tickers
       .filter(coin => parseFloat(coin.quoteVolume) > 20000000 && Math.abs(parseFloat(coin.priceChangePercent)) > 2)
-      .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume));
+      .sort((a, b) => a.symbol.localeCompare(b.symbol));
 
     let tableBody = document.getElementById('table-body');
     tableBody.innerHTML = "";
@@ -58,84 +73,94 @@ async function loadCoins() {
       document.getElementById('status').innerText = `Обрабатываем: ${symbol} (${processed + 1}/${baseFiltered.length})`;
 
       try {
-        // Волатильность
         const volatility = ((parseFloat(coin.highPrice) - parseFloat(coin.lowPrice)) / parseFloat(coin.lowPrice)) * 100;
         if (volatility < 3) continue;
 
-        // Спред
         const depth = await fetch(`https://fapi.binance.com/fapi/v1/depth?symbol=${symbol}&limit=5`).then(res => res.json());
         const bestBid = parseFloat(depth.bids[0][0]);
         const bestAsk = parseFloat(depth.asks[0][0]);
         const spread = ((bestAsk - bestBid) / bestBid) * 100;
         if (spread > 0.5) continue;
 
-        // Funding Rate
         const fundingInfo = await fetch(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${symbol}`).then(res => res.json());
         const fundingRate = parseFloat(fundingInfo.lastFundingRate) * 100;
 
-        // Тренд по 1H
         const klines = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=1h&limit=3`).then(res => res.json());
         const prevClose = parseFloat(klines[1][4]);
         const lastClose = parseFloat(klines[2][4]);
         const trend = lastClose > prevClose ? "Лонг" : "Шорт";
 
-        // Проверка, соответствует ли монета всем условиям для лонга или шорта
-        let rowClass = '';  // Ничего не подсвечиваем по умолчанию
+        let rowClass = 'neutral';
 
         const isLong = parseFloat(coin.priceChangePercent) > 2 && volatility > 3 && spread < 0.5 && fundingRate > 0 && trend === "Лонг";
         const isShort = parseFloat(coin.priceChangePercent) < -2 && volatility > 3 && spread < 0.5 && fundingRate < 0 && trend === "Шорт";
 
-        if (isLong) {
-          rowClass = 'long';  // Подсветка для лонга
-        } else if (isShort) {
-          rowClass = 'short'; // Подсветка для шорта
-        }
+        if (isLong) rowClass = 'long';
+        else if (isShort) rowClass = 'short';
 
-        // Если монета соответствует условиям, добавляем строку
-        if (rowClass) {
-          const row = `<tr class="${rowClass}">
-            <td>${symbol}</td>
-            <td>${parseFloat(coin.quoteVolume).toLocaleString()}</td>
-            <td style="color:${parseFloat(coin.priceChangePercent) > 0 ? 'green' : 'red'}">
-              ${parseFloat(coin.priceChangePercent).toFixed(2)}%
-            </td>
-            <td>${volatility.toFixed(2)}%</td>
-            <td>${spread.toFixed(3)}%</td>
-            <td style="color:${fundingRate >= 0 ? 'green' : 'red'}">${fundingRate.toFixed(4)}%</td>
-            <td>${trend}</td>
-          </tr>`;
-          tableBody.innerHTML += row;
-        }
+        const row = `<tr class="${rowClass}">
+          <td>${symbol}</td>
+          <td>${parseFloat(coin.quoteVolume).toLocaleString()}</td>
+          <td style="color:${parseFloat(coin.priceChangePercent) > 0 ? 'green' : 'red'}">
+            ${parseFloat(coin.priceChangePercent).toFixed(2)}%
+          </td>
+          <td>${volatility.toFixed(2)}%</td>
+          <td>${spread.toFixed(3)}%</td>
+          <td style="color:${fundingRate >= 0 ? 'green' : 'red'}">${fundingRate.toFixed(4)}%</td>
+          <td>${trend}</td>
+        </tr>`;
+        tableBody.innerHTML += row;
 
         processed++;
-
-        // Пауза 800 мс между запросами
         await sleep(800);
-
       } catch (innerError) {
         console.error(`Ошибка обработки монеты ${coin.symbol}:`, innerError);
-        continue; // Пропускаем монету с ошибкой
+        continue;
       }
     }
 
-    // Если не обработано ни одной монеты, показываем сообщение
     if (processed === 0) {
       tableBody.innerHTML = `<tr><td colspan="7">Нет подходящих монет.</td></tr>`;
     }
 
     document.getElementById('status').innerText = "Готово!";
-
   } catch (error) {
     console.error('Ошибка загрузки данных:', error);
     document.getElementById('status').innerText = "Ошибка загрузки!";
   }
 }
 
-// Загружаем сразу
+// Сортировка по столбцам
+document.addEventListener("DOMContentLoaded", function () {
+  const getCellValue = (tr, idx) => tr.children[idx].innerText.replace(/[%,$]/g, '').replace(/\s/g, '');
+
+  const comparer = (idx, asc) => (a, b) => {
+    const valA = getCellValue(a, idx);
+    const valB = getCellValue(b, idx);
+    const numA = parseFloat(valA);
+    const numB = parseFloat(valB);
+    return (isNaN(numA) || isNaN(numB) ? valA.localeCompare(valB) : numA - numB) * (asc ? 1 : -1);
+  };
+
+  document.querySelectorAll("th").forEach(th => th.addEventListener("click", function () {
+    const table = th.closest("table");
+    const tbody = table.querySelector("tbody");
+    Array.from(table.querySelectorAll("th")).forEach(th => th.classList.remove("sorted-asc", "sorted-desc"));
+    const index = Array.from(th.parentNode.children).indexOf(th);
+    const asc = !th.classList.contains("sorted-asc");
+    th.classList.toggle("sorted-asc", asc);
+    th.classList.toggle("sorted-desc", !asc);
+
+    const rows = Array.from(tbody.querySelectorAll("tr")).sort(comparer(index, asc));
+    rows.forEach(tr => tbody.appendChild(tr));
+  }));
+});
+
+// Запуск
 loadCoins();
 
-// Автообновление можно поставить через 5 минут
-setInterval(loadCoins, 300000); // 5 минут
+// Автообновление через 1 час (60 минут)
+setInterval(loadCoins, 3600000); // обновление через 1 час
 </script>
 
 </body>
